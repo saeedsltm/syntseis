@@ -64,6 +64,8 @@ def generateStations(config):
     elif config["RSS"]["flag"]:
         stationsPath = os.path.join(config["RSS"]["Inputs"]["stationFile"])
         station_db = read_csv(stationsPath)
+        station_db.drop_duplicates(subset=["code"], inplace=True)
+        station_db.sort_values(by=["code"], inplace=True)
     station_db = DataFrame(station_db)
     station_db["elv"] *= 1e-3
     station_db[["x", "y"]] = station_db.apply(

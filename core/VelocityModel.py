@@ -90,7 +90,6 @@ def createVelocityModel(config):
                 depth = vp.nodes[0, 0, iz, 2]
                 vp.values[:, :, iz] = vp0 + vDepthCC * depth
             vp.values += vPertCoef * rng.randn(*vp.npts)
-            vp.values = gaussian_filter(vp.values, vGamma)
         elif config["RSS"]["flag"]:
             for iz in range(vp.npts[2]):
                 depth = vp.nodes[0, 0, iz, 2]
@@ -103,7 +102,8 @@ def createVelocityModel(config):
             y1, y2 = anPos[2], anPos[3]
             z1, z2 = anPos[4], anPos[5]
             vp.values[x1:x2, y1:y2, z1:z2] += anPer
-        vp.values = gaussian_filter(vp.values, vAnomalyGamma)
+            vp.values[x1:x2, y1:y2, z1:z2] = gaussian_filter(vp.values[x1:x2, y1:y2, z1:z2], vAnomalyGamma)
+        vp.values = gaussian_filter(vp.values, vGamma)
         vs.values = vp.values/vpvs
         # Clip for extreme P and S velocities
         vp.values = clip(vp.values, vpLimits[0], vpLimits[1])

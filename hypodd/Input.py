@@ -47,23 +47,35 @@ def prepareStationFile(stationFile):
 
 def prepareVelocity(config, vp, vs):
     rng = RandomState(config["FPS"]["VelocityModel"]["rndID"])
+    gradientContrast = config["FPS"]["VelocityModel"]["gradientContrast"]
     nLayers = config["FPS"]["VelocityModel"]["numberOfLayers"]
     velocities = vp.values.mean(axis=1).mean(axis=0)
     depths = vp.nodes.mean(axis=1).mean(axis=0)[:, -1]
-    _, _, nz = vp.npts
-    if config["FPS"]["VelocityModel"]["choseVelocityLayers"] == "r":
-        idz = sorted(rng.choice(range(0, nz, 2), nLayers, replace=False))
-    elif config["FPS"]["VelocityModel"]["choseVelocityLayers"] == "e":
-        idz = linspace(0, nz/2, nLayers, dtype=int)
-    elif config["FPS"]["VelocityModel"]["choseVelocityLayers"] == "g":
-        g = Series(gradient(velocities))
-        idz = array(depths[~g.duplicated().values] + 1, dtype=int)
-    idz[0] = 0
-    velocities = velocities[idz]
-    depths = depths[idz]
-    depths = array(depths, dtype=int)
     VpVs = (vp.values.mean(axis=1).mean(axis=0) /
             vs.values.mean(axis=1).mean(axis=0)).mean()
+    _, _, nz = vp.npts
+    if config["FSS"]["flag"]:
+        if config["FPS"]["VelocityModel"]["choseVelocityLayers"] == "r":
+            idz = sorted(rng.choice(range(0, nz, 2), nLayers, replace=False))
+        elif config["FPS"]["VelocityModel"]["choseVelocityLayers"] == "e":
+            idz = linspace(0, nz/2, nLayers, dtype=int)
+        elif config["FPS"]["VelocityModel"]["choseVelocityLayers"] == "g":
+            g = Series(gradient(velocities))
+            idz = g[g >= gradientContrast].index.values
+        idz[0] = 0
+        velocities = velocities[idz]
+        depths = depths[idz]
+        depths = array(depths, dtype=int)
+        idz = Series(velocities)
+        idz = idz[~idz.duplicated()].index.values
+        velocities = velocities[idz]
+        depths = depths[idz]
+    elif config["RSS"]["flag"]:
+        vmPath = os.path.join("../../../", config["RSS"]["Inputs"]["velocityFile"])
+        df = read_csv(vmPath)
+        velocities = df.vp.values
+        depths = df.depth.values
+        VpVs = df.vpvs.mean()
     if config["FPS"]["VelocityModel"]["choseVelocityLayers"] == "g":
         nLayers = velocities.size
     velocities = " ".join([f"{v:5.2f}" for v in velocities])
@@ -73,15 +85,15 @@ def prepareVelocity(config, vp, vs):
     return velocities, depths, VpVs, nLayers
 
 
-def preparePH2DT(config):
+def preparePH2DT(config, hypoddConfig):
     ph2dtFile = os.path.join("ph2dt.inp")
-    MINWGHT = 0
-    MAXDIST = config["StudyArea"]["radius"]
-    MAXSEP = 15
-    MAXNGH = 10
-    MINLNKS = 6
-    MINOBS = 4
-    MAXOBS = 99
+    MINWGHT = hypoddConfig["MINWGHT"]
+    MAXDIST = hypoddConfig["MAXDIST"]
+    MAXSEP = hypoddConfig["MAXSEP"]
+    MAXNGH = hypoddConfig["MAXNGH"]
+    MINLNKS = hypoddConfig["MINLNKS"]
+    MINOBS = hypoddConfig["MINOBS"]
+    MAXOBS = hypoddConfig["MAXOBS"]
     with open(ph2dtFile, "w") as f:
         f.write("* ph2dt.inp - input control file for program ph2dt\n")
         f.write("* Input station file:\n")
@@ -102,8 +114,9 @@ def preparePH2DT(config):
         f.write(f"{MINWGHT:0.0f}      {MAXDIST:0.0f}       {MAXSEP:0.0f}      {MAXNGH:0.0f}       {MINLNKS:0.0f}      {MINOBS:0.0f}      {MAXOBS:0.0f}\n")
 
 
-def prepareHypoDD(config, vp, vs):
-    DIST = config["StudyArea"]["radius"]
+def prepareHypoDD(config, hypoddConfig, vp, vs):
+    DIST = hypoddConfig["DIST"]
+    OBSCT = hypoddConfig["OBSCT"]
     hypoddFile = os.path.join("hypoDD.inp")
     velocities, depths, VpVs, nLayers = prepareVelocity(config, vp, vs)
     with open(hypoddFile, "w") as f:
@@ -140,13 +153,13 @@ def prepareHypoDD(config, vp, vs):
         f.write("* IPHA: 1= P; 2= S; 3= P&S\n")
         f.write("* DIST:max dist (km) between cluster centroid and station \n")
         f.write("* IDAT   IPHA   DIST\n")
-        f.write(f"    2     3     {DIST:0.0f}\n")
+        f.write(f"    2     3     {DIST}\n")
         f.write("*\n")
         f.write("*--- event clustering:\n")
         f.write("* OBSCC:    min # of obs/pair for crosstime data (0= no clustering)\n")
         f.write("* OBSCT:    min # of obs/pair for network data (0= no clustering)\n")
         f.write("* OBSCC  OBSCT    \n")
-        f.write("     0     6      \n")
+        f.write(f"     0     {OBSCT}      \n")
         f.write("*\n")
         f.write("*--- solution control:\n")
         f.write("* ISTART:       1 = from single source; 2 = from network sources\n")
@@ -191,11 +204,12 @@ def prepareHypoDD(config, vp, vs):
 
 
 def prepareHypoddInputs(config,
+                        hypoddConfig,
                         catalogFile,
                         stationFile,
                         vp, vs,
                         locationPath):
     preparePhaseFile(catalogFile)
     prepareStationFile(stationFile)
-    preparePH2DT(config)
-    prepareHypoDD(config, vp, vs)
+    preparePH2DT(config, hypoddConfig)
+    prepareHypoDD(config, hypoddConfig, vp, vs)

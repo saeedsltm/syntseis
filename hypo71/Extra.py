@@ -2,10 +2,10 @@ import pykonal
 import os
 import sys
 from yaml import SafeLoader, load
-from pandas import read_fwf
+from pandas import read_fwf, read_csv
 from obspy import read_events
 from obspy import UTCDateTime as utc
-from core.Extra import loadxyzm
+# from core.Extra import loadxyzm
 from obspy.geodetics.base import kilometers2degrees as k2d
 from obspy.core.event import Catalog
 from numpy import nan
@@ -64,20 +64,24 @@ def roundTo(x, base=5):
 def hypo71Nordic(inputCatalogName):
     print(f"+++ Reading & Updating catalog for {inputCatalogName} ...")
     catalog = read_events(f"catalog_{inputCatalogName}.out")
-    hypo71_df = loadxyzm(f"xyzm_{inputCatalogName}.dat")[0]
+    hypo71_df = read_csv(f"xyzm_{inputCatalogName}.dat", delim_whitespace=True)
+    hypo71_df_out = hypo71_df.copy()
     hypo71_df.ERH = k2d(hypo71_df.ERH)
+    hypo71_df.ERZ = hypo71_df.ERZ*1e3
     hypo71_df.replace(nan, None, inplace=True)
     outCatalog = Catalog()
     for r, row in hypo71_df.iterrows():
         event = catalog[r]
         eOrt = utc(row.ORT)
         preferred_origin = event.preferred_origin()
+        preferred_magnitude = event.preferred_magnitude()
         eLat = row.Lat
         erLat = row.ERH
         eLon = row.Lon
         erLon = row.ERH
         eDep = row.Dep
         erDep = row.ERZ
+        eGap = row.GAP
         preferred_origin.time = eOrt
         preferred_origin.latitude = eLat
         preferred_origin.longitude = eLon
@@ -85,6 +89,13 @@ def hypo71Nordic(inputCatalogName):
         preferred_origin.latitude_errors.uncertainty = erLat
         preferred_origin.longitude_errors.uncertainty = erLon
         preferred_origin.depth_errors.uncertainty = erDep
+        preferred_origin.quality.azimuthal_gap = eGap
         outCatalog.append(event)
+        hypo71_df_out.loc[r, "Mag"] = preferred_magnitude.mag
     outCatalog.write(f"hypo71_{inputCatalogName}.out",
                      format="nordic", high_accuracy=False)
+    columns = ["ORT", "Lon", "Lat", "Dep", "Mag",
+               "Nus", "NuP", "NuS", "ADS", "MDS", "GAP", "RMS", "ERH", "ERZ"]
+    with open(f"xyzm_{inputCatalogName}.dat", "w") as f:
+        hypo71_df_out.to_string(
+            f, columns=columns, index=False, float_format="%7.3f")

@@ -4,7 +4,7 @@ from core.Report import prepareReport
 from core.Station import generateStationNoiseModel, generateStations
 from core.VelocityModel import createVelocityModel
 from core.Visualize import (plotNoise, plotSeismicityMap, plotStatistics,
-                            plotVelocityModel2D, plotVelocityModel3D)
+                            plotVelocityModel2D, plotVelocityModel3D, plotMisfits)
 from hypo71.Locate import locateHypo71
 from hypocenter.Locate import locateHypocenter
 from hypodd.Locate import locateHypoDD
@@ -42,7 +42,9 @@ class Main():
         for locator in self.locators:
             plotSeismicityMap(self.config, locator)
             plotStatistics(self.config, locator)
-        plotNoise(self.config)
+            plotMisfits(self.config, locator)
+        # plotNoise(self.config)
+
 
     def reportCatalog(self):
         for locator in self.locators:

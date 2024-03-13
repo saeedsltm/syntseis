@@ -13,11 +13,13 @@ import proplot as plt
 import pykonal
 from matplotlib.patches import ConnectionPatch
 from numpy import (arange, array, cos, deg2rad, finfo, histogram, isnan, mean,
-                   sin)
+                   sin, sqrt, linspace, mgrid, nanmax)
 from obspy.geodetics.base import degrees2kilometers as d2k
 from obspy.geodetics.base import locations2degrees as l2d
 from pandas import DataFrame, Series, merge, read_csv, to_numeric
 from pyproj import Proj
+from scipy.interpolate import griddata
+from scipy.ndimage import gaussian_filter
 
 from core.Extra import extractCommons, getMinMax, loadxyzm
 from core.Station import loadStationNoiseModel
@@ -98,7 +100,9 @@ def plotVelocityModel2D(config):
                               axesA=axs[0], axesB=axs[1], shrinkB=1, ls=":",
                               in_layout=False)
         axs[0].add_artist(con)
-    fig.save(os.path.join("results", f"velocityModel2D_{anomalyID}.png")) # type: ignore
+    # type: ignore
+    fig.save(os.path.join("results", f"velocityModel2D_{anomalyID}.png"))
+
 
 def plotVelocityModel3D(config):
     print("+++ Plotting 3D velocity model ...")
@@ -131,7 +135,8 @@ def plotVelocityModel3D(config):
     )
     cbar.set_label("Velocity (km/s)")
     ax.invert_zaxis()
-    fig.save(os.path.join("results", "velocityModel3D.png")) # type: ignore
+    fig.save(os.path.join("results", "velocityModel3D.png"))  # type: ignore
+
 
 def plotRays(config, sources, velocity, raysBank, rayType):
     plt.close("all")
@@ -170,9 +175,10 @@ def plotRays(config, sources, velocity, raysBank, rayType):
                 ms=5,
                 ls="",
                 clip_on=False,
-                zorder=3
+                zorder=3,
+                autoreverse=False
             )
-            ax.plot(ray[:, 0], ray[:, 2], color="k", lw=0.2)
+            ax.plot(ray[:, 0], ray[:, 2], color="k", lw=0.2, autoreverse=False)
     for source in sources:
         ax.plot(
             *source[0:3:2],
@@ -182,16 +188,18 @@ def plotRays(config, sources, velocity, raysBank, rayType):
             s=2.5,
             mew=0.3,
             ls="",
-            zorder=3
+            zorder=3,
+            autoreverse=False
         )
     cbar.set_label("Velocity (km/s)")
     ax.invert_yaxis()
     ax.invert_xaxis()
     ax.set_aspect(1)
-    fig.save(os.path.join("results", f"velocityModel_{rayType}.png")) # type: ignore
+    fig.save(os.path.join("results", f"velocityModel_{rayType}.png"))  # type: ignore
+
 
 def plotSeismicityMap(config, locator="hypo71"):
-    print(f"+++ Plotting seismicity map, locator is: '{locator}' ...")
+    print(f"+++ Plotting seismicity map, locator is: '{locator.capitalize()}' ...")
     clat = config["StudyArea"]["lat"]
     clon = config["StudyArea"]["lon"]
     # Projection to convert degrees to km relative to the center of the area
@@ -214,19 +222,27 @@ def plotSeismicityMap(config, locator="hypo71"):
                 proj(longitude=x.Lon, latitude=x.Lat)), axis=1)
         db["z"] = db["Dep"]
     stationPath = os.path.join("inputs", "stations.csv")
+    bulletinPath = os.path.join("results", "bulletin.csv")
+    bulletin_df = read_csv(bulletinPath)
     station_df = read_csv(stationPath)
+    nEvents = report_ini["ORT"].size
+    TTP, TTS = [], []
+    for code in station_df["code"]:
+        nP = bulletin_df[bulletin_df["code"] == code]["TTP"].count()
+        nS = bulletin_df[bulletin_df["code"] == code]["TTS"].count()
+        TTP.append(1e2*(nP/nEvents))
+        TTS.append(1e2*(nS/nEvents))
+    station_df["TTP"] = TTP
+    station_df["TTS"] = TTS
+    station_df["TTPS"] = station_df[["TTP", "TTS"]].mean(axis=1)
     stationNoiseModel = loadStationNoiseModel()
     stationNoiseModel = DataFrame(stationNoiseModel).T
     stationNoiseModel["code"] = stationNoiseModel.index
     station_df = merge(station_df, stationNoiseModel, on="code")
     station_df["probabilityOfOccurrence"] = to_numeric(
         station_df["probabilityOfOccurrence"])
-    xMin, xMax = station_df.x.min(), station_df.x.max()
-    yMin, yMax = station_df.y.min(), station_df.y.max()
-    xMin -= 0.05*(xMax-xMin)
-    xMax += 0.05*(xMax-xMin)
-    yMin -= 0.05*(yMax-yMin)
-    yMax += 0.05*(yMax-yMin)
+    xMin, xMax = config["FGS"]["xLim"]
+    yMin, yMax = config["FGS"]["yLim"]
     zMin, zMax = 0, config["FGS"]["SeismicityMapZMax"]
     axShape = [
         [1]
@@ -234,7 +250,11 @@ def plotSeismicityMap(config, locator="hypo71"):
     plt.rc.update(
         {'fontsize': 7, 'legend.fontsize': 6, 'label.weight': 'bold'})
     fig, axs = plt.subplots(axShape, share=False)
-    axs.format(xlocator=("maxn", 4), ylocator=("maxn", 4))
+    axs.format(
+        xlim=(xMin, xMax),
+        ylim=(yMin, yMax),
+        xlocator=("maxn", 4),
+        ylocator=("maxn", 4))
     [ax.grid(ls=":") for ax in axs]
 
     axs[0].format(
@@ -243,22 +263,25 @@ def plotSeismicityMap(config, locator="hypo71"):
         xlabel="X (km)",
         ylabel="Y (km)")
 
-    X = [report_ini.x, ]#report_unw.x, report_w.x]
-    Y = [report_ini.y, ]#report_unw.y, report_w.y]
-    M = [report_ini.Mag, ]#report_unw.Mag, report_w.Mag]
+    X = [report_ini.x, report_unw.x, report_w.x]
+    Y = [report_ini.y, report_unw.y, report_w.y]
+    M = [report_ini.Mag, report_unw.Mag, report_w.Mag]
     C = ["green", "red", "blue"]
     L = ["Raw", "Relocated$_{unw}$", "Relocated$_w$"]
     for x, y, m, c, l in zip(X, Y, M, C, L):
         if m.isna().sum() == m.size:
             m = 5
         axs[0].scatter(x.values, y.values, s=m, marker="o", c=c, lw=0.4,
-                       edgecolors="k", alpha=.5, label=l,
-                       legend="t", legend_kw={'ncol': 3})
+                       edgecolors="k", alpha=.5, label=l, clip_on=True,
+                       legend="t" if len(X) > 1 else None, legend_kw={'ncol': 3})
     # cs = station_df.probabilityOfOccurrence*100
-    cs = [_[0] for _ in station_df.siteNoiseLevel]
-    sc = axs[0].scatter(station_df.x, station_df.y, marker="^", lw=0.4,
-                        edgecolors="k", s=50, c=cs,
-                        cmap="Spectral", vmin=0, vmax=5.0)
+    # cs = [_[0] for _ in station_df.siteNoiseLevel]
+    cs = station_df.TTP
+    sc = axs[0].scatter(station_df.x, station_df.y, marker="^", lw=0.75,
+                        edgecolors="none", s=50, c=cs, clip_on=True,
+                        cmap="Spectral_r", levels=range(0, 110, 10), vmin=0, vmax=100)
+    axs[0].plot(station_df.x, station_df.y, marker="^",
+                color="none", ls="", mew=0.75, mec="k", autoreverse=False, clip_on=True)
     cbar = axs[0].colorbar(
         sc,
         labelsize=7,
@@ -267,58 +290,60 @@ def plotSeismicityMap(config, locator="hypo71"):
         width=0.1
     )
     # cbar.set_label("Contribution (%)")
-    cbar.set_label("Noise level (s)")
+    # cbar.set_label("Noise level (s)")
+    cbar.set_label("P phase contribution (%)")
     for ii, jj, ss in zip(
             station_df.x, station_df.y, station_df.code):
-        dy = 0.05*(station_df.y.max() - station_df.y.min())
+        dy = 0.045*(yMax - yMin)
         axs[0].text(x=ii, y=jj-dy, s=ss, border=True, borderinvert=True,
-                    borderwidth=1,
+                    borderwidth=1, clip_on=True,
                     **{"weight": "bold", "size": "xx-small", "ha": "center"})
-    for fault in config["FSS"]["Catalog"]["Faults"]:
-        n = fault["name"]
-        x = fault["dx"]
-        y = fault["dy"]
-        w = fault["width"]
-        s = fault["strike"]
-        x += w*cos(deg2rad(90+s))
-        y += w*sin(deg2rad(90+s))
-        axs[0].text(x=x, y=y, s=n, border=True, borderinvert=True,
-                    borderwidth=1, rotation=s,
-                    **{"weight": "bold", "size": "medium", "ha": "center"})
+    if config["FSS"]["flag"]:
+        for fault in config["FSS"]["Catalog"]["Faults"]:
+            n = fault["name"]
+            x = fault["dx"]
+            y = fault["dy"]
+            w = fault["width"]
+            s = fault["strike"]
+            x += w*cos(deg2rad(90+s))
+            y += w*sin(deg2rad(90+s))
+            axs[0].text(x=x, y=y, s=n, border=True, borderinvert=True,
+                        borderwidth=1, rotation=s,
+                        **{"weight": "bold", "size": "medium", "ha": "center"})
     px = axs[0].panel_axes(side="r", width="5em")
     px.grid(ls=":")
     px.format(xlim=(zMin, zMax), ylim=(yMin, yMax),
               xlabel="Depth (km)", xlocator=("maxn", 2), ylocator=("maxn", 4))
-    X = [report_ini.z, ]#report_unw.z, report_w.z]
-    Y = [report_ini.y, ]#report_unw.y, report_w.y]
-    M = [report_ini.Mag, ]#report_unw.Mag, report_w.Mag]
+    X = [report_ini.z, report_unw.z, report_w.z]
+    Y = [report_ini.y, report_unw.y, report_w.y]
+    M = [report_ini.Mag, report_unw.Mag, report_w.Mag]
     C = ["green", "red", "blue"]
     for x, y, c, m in zip(X, Y, C, M):
         if m.isna().sum() == m.size:
             m = 5
-        px.scatter(x.values, y.values, s=m, marker="o", c=c,
+        px.scatter(x.values, y.values, s=m, marker="o", c=c, clip_on=True,
                    lw=0.4, edgecolors="k", alpha=.5)
-    # px.invert_yaxis()
 
     px = axs[0].panel_axes(side="b", width="5em")
     px.grid(ls=":")
     px.format(xlim=(xMin, xMax), ylim=(zMax, zMin),
               xlabel="Longitude (deg)", ylabel="Depth (km)",
               xlocator=("maxn", 4), ylocator=("maxn", 2))
-    X = [report_ini.x, ]#report_unw.x, report_w.x]
-    Y = [report_ini.z, ]#report_unw.z, report_w.z]
-    M = [report_ini.Mag, ]#report_unw.Mag, report_w.Mag]
+    X = [report_ini.x, report_unw.x, report_w.x]
+    Y = [report_ini.z, report_unw.z, report_w.z]
+    M = [report_ini.Mag, report_unw.Mag, report_w.Mag]
     C = ["green", "red", "blue"]
     for x, y, c, m in zip(X, Y, C, M):
         if m.isna().sum() == m.size:
             m = 5
-        px.scatter(x.values, y.values, s=m, marker="o", c=c,
+        px.scatter(x.values, y.values, s=m, marker="o", c=c, clip_on=True,
                    lw=0.4, edgecolors="k", alpha=.5)
-    # px.invert_xaxis()
-    fig.save(os.path.join("results", f"seismicity_{locator}.png")) # type: ignore
+    fig.save(os.path.join("results", f"seismicity_{locator}.png"))  # type: ignore
+
 
 def plotGapRMS(config, locator, basedOn="Nus GAP | Nus | MDS"):
-    print(f"+++ Plotting Gap and RMS based on {basedOn}, locator is: '{locator}' ...")
+    print(
+        f"+++ Plotting: Gap-RMS, based-on: {basedOn}, locator: '{locator.capitalize()}' ...")
     catalog_ini_path = os.path.join(
         "results", "location", locator, "xyzm_initial.dat")
     catalog_unw_path = os.path.join(
@@ -361,7 +386,7 @@ def plotGapRMS(config, locator, basedOn="Nus GAP | Nus | MDS"):
         scr = axs[i].scatter(
             x, y, s=50, marker="o",  c=c, lw=0.4, edgecolors="k",
             cmap="Gray_r", vmin=vmin, vmax=vmax)
-        axs[i].plot([0, 1], [0, 1], transform=axs[i].transAxes,
+        axs[i].plot([0, 1], [0, 1], transform=axs[i].transAxes,autoreverse=False,
                     ls="--", lw=1.0, c="red")
         ix = axs[i].inset([0.125, 0.6, 0.3, 0.3], transform="axes", zoom=False)
         ix.grid(ls=":")
@@ -380,10 +405,13 @@ def plotGapRMS(config, locator, basedOn="Nus GAP | Nus | MDS"):
     fig.colorbar(
         scr, row=1, loc="r", extend="both",
         label="Number of used stations", shrink=0.9)
-    fig.save(os.path.join("results", f"compare_GapRMS_{locator}.png")) # type: ignore
+    # type: ignore
+    fig.save(os.path.join("results", f"compare_GapRMS_{locator}.png"))
+
 
 def plotHypoPairs(config, locator, feature, basedOn):
-    print(f"+++ Plotting hypocenter comparison for '{feature}' based on '{basedOn}', locator is: '{locator}' ...")
+    print(
+        f"+++ Plotting: hypocenter-comparison, target: '{feature}', based-on: '{basedOn}', locator: '{locator.capitalize()}' ...")
     catalog_ini_path = os.path.join(
         "results", "location", locator, "xyzm_initial.dat")
     catalog_unw_path = os.path.join(
@@ -399,7 +427,7 @@ def plotHypoPairs(config, locator, feature, basedOn):
     unit = {"Lon": "$\\degree$",
             "Lat": "$\\degree$",
             "Dep": "km"}
-    fig, axs = plt.subplots(axShape)
+    fig, axs = plt.subplots(axShape, share=False)
     axs.format(suptitle="Dislocations",
                xlabel="{0}-Raw ({1})".format(feature, unit[feature]),
                ylabel="{0}-Relocated ({1})".format(feature, unit[feature]),
@@ -429,13 +457,13 @@ def plotHypoPairs(config, locator, feature, basedOn):
         scr = axs[i].scatter(
             x, y, s=25, marker="o",  c=c, lw=0.4, edgecolors="k",
             cmap="Gray_r", vmin=vmin, vmax=vmax)
-        axs[i].plot([0, 1], [0, 1], transform=axs[i].transAxes,
+        axs[i].plot([0, 1], [0, 1], transform=axs[i].transAxes,autoreverse=False,
                     ls="--", lw=1.0, c="red")
         ix = axs[i].inset([0.125, 0.6, 0.3, 0.3], transform="axes", zoom=False)
         ix.grid(ls=":")
         ix.spines["right"].set_visible(False)
         ix.spines["top"].set_visible(False)
-        data = x.values - y.values # type: ignore        data = data[~isnan(data)]
+        data = x.values - y.values  # type: ignore        data = data[~isnan(data)]
         if feature in ["Lon", "Lat"]:
             data = d2k(data)
         M = data.mean()
@@ -449,10 +477,12 @@ def plotHypoPairs(config, locator, feature, basedOn):
     fig.colorbar(
         scr, row=1, loc="r", extend="both",
         label="{0} ({1})".format(basedOn, unit[feature]), shrink=0.9)
-    fig.save(os.path.join("results", f"compare_{feature}_{locator}.png")) # type: ignore
+    # type: ignore
+    fig.save(os.path.join("results", f"compare_{feature}_{locator}.png"))
+
 
 def plotHistPairs(config, locator, feature):
-    print(f"+++ Plotting histograms for {feature}, locator is: '{locator}' ...")
+    print(f"+++ Plotting: histograms-{feature}, locator: '{locator}' ...")
     catalog_ini_path = os.path.join(
         "results", "location", locator, "xyzm_initial.dat")
     catalog_unw_path = os.path.join(
@@ -477,7 +507,7 @@ def plotHistPairs(config, locator, feature):
     axShape = [
         [1],
     ]
-    fig, axs = plt.subplots(axShape)
+    fig, axs = plt.subplots(axShape, share=False)
     axs.format(suptitle="Absolute error",
                xlabel="{0} error (km)".format(feature),
                ylabel="Number of events",
@@ -531,21 +561,23 @@ def plotHistPairs(config, locator, feature):
         if i == 0:
             label = "unw"
             axs[0].plot(calError_unw[1][:-1], calError_unw[0],
-                        color="k", lw=2.2, alpha=0.7)
+                        color="k", lw=2.2, autoreverse=False, alpha=0.7)
             axs[0].plot(calError_unw[1][:-1], calError_unw[0], color=color, lw=2.0, alpha=0.7,
-                        label="$error_{unw}$", legend="ur", legend_kw={"ncol": 1})
+                        label="$error_{unw}$", legend="ur", legend_kw={"ncol": 1}, autoreverse=False)
         else:
             label = "w"
-            axs[0].plot(calError_w[1][:-1], calError_w[0],
+            axs[0].plot(calError_w[1][:-1], calError_w[0],autoreverse=False,
                         color="k", lw=2.2, alpha=0.7)
             axs[0].plot(calError_w[1][:-1], calError_w[0], color=color, lw=2.0, alpha=0.7,
-                        label="$error_{w}$", legend="ur", legend_kw={"ncol": 1})
+                        label="$error_{w}$", legend="ur", legend_kw={"ncol": 1}, autoreverse=False)
         axs[0].text(x, y, f"$Q_{{25\\%-{label}}} = {q25:0.1f}km$",
                     transform=axs[0].transAxes, size=6)
         y += -dy
         axs[0].text(x, y, f"$Q_{{50\\%-{label}}} = {q50:0.1f}km$",
                     transform=axs[0].transAxes, size=6)
-    fig.save(os.path.join("results", f"hist_{feature}_{locator}.png")) # type: ignore
+    # type: ignore
+    fig.save(os.path.join("results", f"hist_{feature}_{locator}.png"))
+
 
 def plotNoise(config):
     noise_df = read_csv(os.path.join("results", "noise.csv"))
@@ -588,7 +620,8 @@ def plotNoise(config):
                     color=color, histtype="bar",
                     labels=label, legend="r",
                     legend_kw={"title": "Weight", "ncol": 1})
-    fig.save(os.path.join("results", "hist_noise.png")) # type: ignore
+    fig.save(os.path.join("results", "hist_noise.png"))  # type: ignore
+
 
 def plotStatistics(config, locator):
     plotHypoPairs(config, locator, "Lon", "GAP")
@@ -597,3 +630,111 @@ def plotStatistics(config, locator):
     plotHistPairs(config, locator, "Horizontal")
     plotHistPairs(config, locator, "Depth")
     plotGapRMS(config, locator, "Nus")
+
+
+def plotMisfit(config, locator="hypo71", target="Horizontal", errorMax=5):
+    print(
+        f"+++ Plotting {target} misfit map, locator is: '{locator.capitalize()}' ...")
+    clat = config["StudyArea"]["lat"]
+    clon = config["StudyArea"]["lon"]
+    proj = Proj(f"+proj=sterea\
+            +lon_0={clon}\
+            +lat_0={clat}\
+            +units=km")
+    catalog_ini_path = os.path.join(
+        "results", "location", locator, "xyzm_initial.dat")
+    catalog_unw_path = os.path.join(
+        "results", "location", locator, "xyzm_unw.dat")
+    catalog_w_path = os.path.join(
+        "results", "location", locator, "xyzm_w.dat")
+    report_ini, report_unw, report_w = loadxyzm(catalog_ini_path,
+                                                catalog_unw_path,
+                                                catalog_w_path)
+    df_ini_unw_com = extractCommons(config, report_ini, report_unw)
+    df_ini_w_com = extractCommons(config, report_ini, report_w)
+    for db in [df_ini_unw_com, df_ini_w_com]:
+        db[["x_ini", "y_ini"]] = db.apply(
+            lambda x: Series(
+                proj(longitude=x.Lon_ini, latitude=x.Lat_ini)), axis=1)
+        db[["x_tar", "y_tar"]] = db.apply(
+            lambda x: Series(
+                proj(longitude=x.Lon_tar, latitude=x.Lat_tar)), axis=1)
+        db["z_ini"] = db["Dep_ini"]
+        db["z_tar"] = db["Dep_tar"]
+    stationPath = os.path.join("inputs", "stations.csv")
+    station_df = read_csv(stationPath)
+    stationNoiseModel = loadStationNoiseModel()
+    stationNoiseModel = DataFrame(stationNoiseModel).T
+    stationNoiseModel["code"] = stationNoiseModel.index
+    station_df = merge(station_df, stationNoiseModel, on="code")
+    station_df["probabilityOfOccurrence"] = to_numeric(
+        station_df["probabilityOfOccurrence"])
+    xMin, xMax = station_df.x.min(), station_df.x.max()
+    yMin, yMax = station_df.y.min(), station_df.y.max()
+    xMin -= 0.05*(xMax-xMin)
+    xMax += 0.05*(xMax-xMin)
+    yMin -= 0.05*(yMax-yMin)
+    yMax += 0.05*(yMax-yMin)
+    axShape = [
+        [1, 2]
+    ]
+    plt.rc.update(
+        {'fontsize': 7, 'legend.fontsize': 6, 'label.weight': 'bold'})
+    fig, axs = plt.subplots(axShape, share=False, span=False)
+    axs.format(xlocator=("maxn", 4), ylocator=("maxn", 4))
+    [ax.grid(ls=":") for ax in axs]
+    if target == "Horizontal":
+        dx_ini_unw = df_ini_unw_com.x_ini - df_ini_unw_com.x_tar
+        dy_ini_unw = df_ini_unw_com.y_ini - df_ini_unw_com.y_tar
+        misfit_ini_unw = sqrt(dx_ini_unw**2 + dy_ini_unw**2)
+        dx_ini_w = df_ini_w_com.x_ini - df_ini_w_com.x_tar
+        dy_ini_w = df_ini_w_com.y_ini - df_ini_w_com.y_tar
+        misfit_ini_w = sqrt(dx_ini_w**2 + dy_ini_w**2)
+        unit = "km"
+    elif target == "Depth":
+        dz_ini_unw = df_ini_unw_com.z_ini - df_ini_unw_com.z_tar
+        misfit_ini_unw = abs(dz_ini_unw)
+        dz_ini_w = df_ini_w_com.z_ini - df_ini_w_com.z_tar
+        misfit_ini_w = abs(dz_ini_w)
+        unit = "km"
+    for i, x, y, misfit, label in zip([0, 1],
+                                      [df_ini_unw_com.x_ini, df_ini_w_com.x_ini],
+                                      [df_ini_unw_com.y_ini, df_ini_w_com.y_ini],
+                                      [misfit_ini_unw, misfit_ini_w],
+                                      ["Unweighted", "Weighted"]):
+        xMin, xMax = config["FGS"]["misfit"]["xLim"]
+        yMin, yMax = config["FGS"]["misfit"]["yLim"]
+        axs[i].format(
+            title=f"Misfit Initial vs {label}",
+            xlim=(xMin, xMax),
+            ylim=(yMin, yMax),
+            xlabel="X (km)",
+            ylabel="Y (km)")
+        xGridPts = complex(config["FGS"]["misfit"]["xGridPts"])
+        yGridPts = complex(config["FGS"]["misfit"]["yGridPts"])
+        X, Y = mgrid[xMin:xMax:xGridPts, yMin:yMax:yGridPts]
+        T = griddata((x, y), misfit, (X, Y), method="linear")
+        T = gaussian_filter(T, config["FGS"]["gussianFilter"])
+        errorMax = min([errorMax, nanmax(T)])
+        levels = linspace(0, errorMax, 20)
+        cs = axs[i].contourf(X, Y, T, levels=levels,
+                             extend="both", cmap="spectral_r")
+        axs[i].contour(X, Y, T, levels=levels, colors="k", lw=.1, alpha=0.2)
+        axs[i].set_facecolor("gray")
+        axs[i].scatter(x, y, c='k', s=1, alpha=0.1, marker='.')
+        axs[i].colorbar(cs, loc="r", label=f"Misfit {unit}", locator_kw={"nbins": 5})
+        axs[i].plot(station_df.x, station_df.y, marker="^", lw=1.25, ls="",
+                    edgecolors="k", ms=5, c="w", clip_on=True, autoreverse=False, zorder=10)
+        for ii, jj, ss in zip(
+                station_df.x, station_df.y, station_df.code):
+            dy = 0.04*(yMax - yMin)
+            axs[i].text(x=ii, y=jj-dy, s=ss, border=True, borderinvert=True,
+                        borderwidth=1, clip_on=True,
+                        **{"weight": "bold", "size": "xx-small", "ha": "center"})
+    axs.figure.tight_layout()
+    fig.save(os.path.join("results", f"misfit_{locator}_{target}.png"))
+
+
+def plotMisfits(config, locator):
+    plotMisfit(config, locator, target="Horizontal", errorMax=5)
+    plotMisfit(config, locator, target="Depth", errorMax=10)

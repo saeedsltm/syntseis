@@ -1,10 +1,27 @@
-from pandas import read_csv, to_datetime
-from numpy import sqrt
+from pandas import read_csv, to_datetime, Series
+from numpy import sqrt, diff, max
 from obspy import read_events
 from obspy import UTCDateTime as utc
 from obspy.geodetics.base import kilometers2degrees as k2d
 from obspy.core.event import Catalog
+from obspy.geodetics.base import gps2dist_azimuth as gps
 from tqdm import tqdm
+from yaml import SafeLoader, load
+import os
+import sys
+
+
+def readHypoddConfig():
+    hypoddConfigPath = os.path.join("files", "hypodd.yml")
+    if not os.path.exists(hypoddConfigPath):
+        msg = "+++ Could not find hypoDD configuration file! Aborting ..."
+        print(msg)
+        sys.exit()
+    with open(hypoddConfigPath) as f:
+        config = load(f, Loader=SafeLoader)
+    msg = "+++ Configuration file was loaded successfully."
+    print(msg)
+    return config
 
 
 def loadHypoDDRelocFile():
@@ -56,48 +73,50 @@ def writexyzm(outName):
         hypodd_df.to_string(f, columns=columns, index=False, float_format="%7.3f")
 
 
-def hypoDD2nordic(outName):
-    hypoddInp = read_events("phase.dat")
+def getGap(evLat, evLon, arrivals, stationFile):
+    station_df = read_csv(stationFile)
+    station_df[["Azim"]] = station_df.apply(
+        lambda x: Series(gps(evLat, evLon, x.lat, x.lon)[1]), axis=1)
+    azimuths = station_df["Azim"].sort_values()
+    gap = int(max(diff(azimuths)))
+    return gap
+
+
+def hypoDD2nordic(outName, stationFile):
+    nordicCat = read_events(f"catalog_{outName}.out")
     hypoddCat = loadHypoDDRelocFile()
-    outCatalog = Catalog()
-    mapW = {
-        0.00: 4,
-        0.25: 3,
-        0.50: 2,
-        0.75: 1,
-        1.00: 0
-    }
+    xyzm_df = read_csv(f"xyzm_{outName}.dat", delim_whitespace=True)
+    finalCat = Catalog()
+    hypoddCat.SC.replace(60, 59.99, inplace=True)
     desc = f"+++ Converting hypoDD to NORDIC for {outName} ..."
-    for event in tqdm(hypoddInp, desc=desc, unit=" event"):
-        preferred_origin = event.preferred_origin()
-        eId = int(preferred_origin.resource_id.id.split("/")[-1])
-        if eId in hypoddCat.ID.values:
-            indx = hypoddCat.ID[hypoddCat.ID == eId].index.values[0]
-            row = hypoddCat.iloc[indx].copy()
-            if row.SC == 60:
-                row.SC = 59.99
-            eOrt = utc(int(row.YR), int(row.MO), int(row.DY),
-                       int(row.HR), int(row.MI), row.SC)
-            eLat = row.LAT
-            erLat = row.EY
-            eLon = row.LON
-            erLon = row.EX
-            eDep = row.DEPTH
-            erDep = row.EZ
-            preferred_origin.time = eOrt
-            preferred_origin.latitude = eLat
-            preferred_origin.longitude = eLon
-            preferred_origin.depth = eDep*1e3
-            preferred_origin.latitude_errors.uncertainty = k2d(erLat)
-            preferred_origin.longitude_errors.uncertainty = k2d(erLon)
-            preferred_origin.depth_errors.uncertainty = erDep
-            arrivals_id = {
-                arrival.pick_id: arrival.time_weight for arrival in preferred_origin.arrivals}
-            for pick in event.picks:
-                pick_id = pick.resource_id
-                if pick_id in arrivals_id:
-                    w = arrivals_id[pick_id]
-                    pick.update({"extra": {"nordic_pick_weight": {"value": 0}}})
-                    pick.extra.nordic_pick_weight.value = mapW[w]
-            outCatalog.append(event)
-    outCatalog.write(f"hypodd_{outName}.out", format="nordic", high_accuracy=False)
+    for i, hypoddEvent in tqdm(hypoddCat.iterrows(), desc=desc, unit=" event"):
+        hypoddEventID = int(hypoddEvent.ID) - 1
+        nordicEvent = nordicCat[hypoddEventID]
+        preferred_origin = nordicEvent.preferred_origin()
+        arrivals = preferred_origin.arrivals
+        eOrt = utc(int(hypoddEvent.YR), int(hypoddEvent.MO), int(hypoddEvent.DY),
+                   int(hypoddEvent.HR), int(hypoddEvent.MI), hypoddEvent.SC)
+        eLat = hypoddEvent.LAT
+        erLat = hypoddEvent.EY*1e-3
+        eLon = hypoddEvent.LON
+        erLon = hypoddEvent.EX*1e-3
+        eDep = hypoddEvent.DEPTH
+        erDep = hypoddEvent.EZ
+        rms = hypoddEvent.RCT
+        preferred_origin.time = eOrt
+        preferred_origin.latitude = eLat
+        preferred_origin.longitude = eLon
+        preferred_origin.depth = eDep*1e3
+        preferred_origin.latitude_errors.uncertainty = k2d(erLat)
+        preferred_origin.longitude_errors.uncertainty = k2d(erLon)
+        preferred_origin.depth_errors.uncertainty = erDep
+        gap = getGap(eLat, eLon, arrivals, stationFile)
+        preferred_origin.quality.azimuthal_gap = gap
+        preferred_origin.quality.standard_error = rms
+        finalCat.append(nordicEvent)
+        xyzm_df.loc[i, "GAP"] = gap
+    finalCat.write(f"hypodd_{outName}.out", format="nordic", high_accuracy=False)
+    columns = ["ORT", "Lon", "Lat", "Dep", "Mag",
+               "Nus", "NuP", "NuS", "ADS", "MDS", "GAP", "RMS", "ERH", "ERZ"]
+    with open(f"xyzm_{outName}.dat", "w") as f:
+        xyzm_df.to_string(f, columns=columns, index=False, float_format="%7.3f")

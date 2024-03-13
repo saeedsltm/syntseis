@@ -42,21 +42,33 @@ def addStation(phaseFile, station_df):
 
 def addVelocityModel(config, vp, vs, phaseFile):
     rng = RandomState(config["FPS"]["VelocityModel"]["rndID"])
+    gradientContrast = config["FPS"]["VelocityModel"]["gradientContrast"]
     nLayers = config["FPS"]["VelocityModel"]["numberOfLayers"]
     velocities = vp.values.mean(axis=1).mean(axis=0)
     depths = vp.nodes.mean(axis=1).mean(axis=0)[:, -1]
     _, _, nz = vp.npts
-    if config["FPS"]["VelocityModel"]["choseVelocityLayers"] == "r":
-        idz = sorted(rng.choice(range(0, nz, 2), nLayers, replace=False))
-    elif config["FPS"]["VelocityModel"]["choseVelocityLayers"] == "e":
-        idz = linspace(0, nz/2, nLayers, dtype=int)
-    elif config["FPS"]["VelocityModel"]["choseVelocityLayers"] == "g":
-        g = Series(gradient(velocities))
-        idz = array(depths[~g.duplicated().values] + 1, dtype=int)
-    idz[0] = 0
-    velocities = velocities[idz]
-    depths = depths[idz]
-    depths = array(depths, dtype=int)
+    if config["FSS"]["flag"]:
+        if config["FPS"]["VelocityModel"]["choseVelocityLayers"] == "r":
+            idz = sorted(rng.choice(range(0, nz, 2), nLayers, replace=False))
+        elif config["FPS"]["VelocityModel"]["choseVelocityLayers"] == "e":
+            idz = linspace(0, nz/2, nLayers, dtype=int)
+        elif config["FPS"]["VelocityModel"]["choseVelocityLayers"] == "g":
+            g = Series(gradient(velocities))
+            idz = g[g >= gradientContrast].index.values
+        idz[0] = 0
+        velocities = velocities[idz]
+        depths = depths[idz]
+        depths = array(depths, dtype=int)
+        idz = Series(velocities)
+        idz = idz[~idz.duplicated()].index.values
+        velocities = velocities[idz]
+        depths = depths[idz]
+    elif config["RSS"]["flag"]:
+        vmPath = os.path.join("../../../", config["RSS"]["Inputs"]["velocityFile"])
+        df = read_csv(vmPath)
+        velocities = df.vp.values
+        depths = df.depth.values
+        VpVs = df.vpvs.mean()
     modelLineFmt = " {v:5.2f}  {z:6.3f}\n"
     with open(phaseFile, "a") as f:
         for v, z in zip(velocities, depths):
@@ -66,15 +78,16 @@ def addVelocityModel(config, vp, vs, phaseFile):
         f.write("\n")
 
 
-def addControlLine(phaseFile, station_df, vp, vs):
+def addControlLine(config, phaseFile, station_df, vp, vs):
+    vmPath = os.path.join("../../../", config["RSS"]["Inputs"]["velocityFile"])
+    df = read_csv(vmPath)
+    VpVs = df.vpvs.mean()
     trialDepth = 10
     xNear = mean(station_df.apply(lambda x: mean(
         Series(sqrt((x.lon-station_df.lon)**2 + (x.lat-station_df.lat)**2))),
         axis=1))
     xNear = roundTo(d2k(xNear), base=5)
     xFar = 2.5*xNear
-    VpVs = (vp.values.mean(axis=1).mean(axis=0) /
-            vs.values.mean(axis=1).mean(axis=0)).mean()
     with open(phaseFile, "a") as f:
         f.write(
             f"{trialDepth:4.0f}.{xNear:4.0f}.{xFar:4.0f}. {VpVs:4.2f}    4    0    0    1    1    0    0 0111\n")
@@ -101,7 +114,8 @@ def addArrivals(catalogFile, phaseFile):
                 pht = pick.time.strftime("%y%m%d%H%M%S.%f")[:15]
                 if "S" in pha and code in data:
                     ptime = utc.strptime(data[code]["P"]["Part"], "%y%m%d%H%M%S.%f")
-                    stime = ptime.second + ptime.microsecond*1e-6 + (pick.time - ptime)
+                    stime = ptime.second + ptime.microsecond * \
+                        1e-6 + (pick.time - ptime)
                     pht = "{0:6.2f}".format(stime)
                 if code not in data and "P" in pha:
                     data[code] = {"P": {"Part": pht, "wP": w},
@@ -134,7 +148,7 @@ def preparPhaseFile(config, resetsPath, stationPath, vp, vs, catalogPath):
     addResets(phasePath, resetsPath)
     addStation(phasePath, station_df)
     addVelocityModel(config, vp, vs, phasePath)
-    addControlLine(phasePath, station_df, vp, vs)
+    addControlLine(config, phasePath, station_df, vp, vs)
     addArrivals(catalogPath, phasePath)
 
 

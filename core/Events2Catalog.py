@@ -3,7 +3,8 @@ from obspy.core.event.origin import Pick
 from obspy.core.event.magnitude import Amplitude
 from tqdm import tqdm
 from datetime import timedelta as td
-from numpy import isnan
+from numpy import isnan, nan
+from numpy.random import RandomState
 from core.Noise import addNoiseWeight
 from core.Magnitude import getAmplitude
 from obspy.geodetics.base import degrees2kilometers as d2k
@@ -84,18 +85,35 @@ class feedCatalog():
             obspy.event.magnitude: an obspy magnitude object
         """
         magnitude = event.Magnitude()
-        magnitude.mag = eventInfo.Mag
+        if not isnan(eventInfo.Mag):
+            magnitude.mag = eventInfo.Mag
         magnitude.magnitude_type = magType
         magnitude.origin_id = origin.resource_id
         return magnitude
 
     def setAmplitudes(self,
-                      mag,
+                      config,
+                      magnitude,
                       picks,
-                      arrivals):
+                      arrivals,
+                      eid):
         amplitudes = []
         PICKS = {pick.resource_id: pick for pick in picks}
-        for arrival in arrivals:
+        rng = RandomState(eid)
+        minAmpPercentage = config["FSS"]["Catalog"]["minAmpPercentage"]
+        maxAmpPercentage = config["FSS"]["Catalog"]["maxAmpPercentage"]
+        if config["RSS"]["flag"]:
+            minAmpPercentage = config["RSS"]["Phases"]["minAmpPercentage"]
+            maxAmpPercentage = config["RSS"]["Phases"]["maxAmpPercentage"]
+        min_num_amp = int(len(arrivals) * minAmpPercentage * 1e-2)
+        max_num_amp = int(len(arrivals) * maxAmpPercentage * 1e-2)
+        if min_num_amp == max_num_amp:
+            size = min_num_amp
+        else:
+            size = rng.choice(range(min_num_amp, max_num_amp), 1)
+        samples_id = rng.choice(len(arrivals), size, replace=False)
+        for sample_id in samples_id:
+            arrival = arrivals[sample_id]
             amplitude = Amplitude()
             arrival.update({"pick": PICKS[arrival.pick_id]})
             if "P" == arrival.pick.phase_hint:
@@ -108,7 +126,7 @@ class feedCatalog():
                 picks.append(new_amp_pick)
                 amplitude.pick_id = new_amp_pick.resource_id
                 amplitude.waveform_id = arrival.pick.waveform_id
-                amplitude.generic_amplitude = getAmplitude(mag,
+                amplitude.generic_amplitude = getAmplitude(magnitude,
                                                            d2k(arrival.distance))
                 amplitude.type = "AML"
                 amplitude.magnitude_hint = "ML"
@@ -226,11 +244,15 @@ class feedCatalog():
         Event = event.Event()
         origin = self.setOrigin(eventInfo, arrivals)
         magnitude = self.setMagnitude(eventInfo, "Ml", origin)
-        picks, amplitudes = self.setAmplitudes(magnitude.mag, picks, arrivals)
+        if magnitude.mag:
+            picks, amplitudes = self.setAmplitudes(
+                config, magnitude, picks, arrivals, eid)
         Event.origins.append(origin)
-        Event.magnitudes.append(magnitude)
+        if magnitude.mag:
+            Event.magnitudes.append(magnitude)
         Event.picks = picks
-        Event.amplitudes = amplitudes
+        if magnitude.mag:
+            Event.amplitudes = amplitudes
         return Event
 
     def setCatalog(self,

@@ -45,7 +45,7 @@ def checkEventInsideVelocityGrid(hypocenter_df):
         print(" - Change fault dimension ...")
         sys.exit()
     if Z_out != 0:
-        print("! > events found outside Z velocity grid:")
+        print(f"! > events found outside Z velocity grid ({zmin}, {zmax}):")
         print(" - Change fault dimension, you may increase 'depth' parameter ...")
         sys.exit()
 
@@ -62,6 +62,9 @@ def generateCandidateHypocenters(config, fault):
     rndID = fault["rndID"]
     rng = RandomState(rndID)
     noEvents = fault["noEvents"]
+    gaussianDist = fault["gaussianDist"]
+    xVar = fault["xVar"]
+    yVar = fault["yVar"]
     minEventSpacing = k2d(fault["minEventSpacing"])
     dx = fault["dx"]
     dy = fault["dy"]
@@ -76,8 +79,8 @@ def generateCandidateHypocenters(config, fault):
     latMin, latMax = cLat - k2d(length), cLat + k2d(length)
     bound = [lonMin, lonMax, latMin, latMax]
     hypocenter_df = distributeEqOnFault(
-        bound, noEvents, minEventSpacing,
-        depth, strike, dip, rndID)
+        config, bound, noEvents, gaussianDist, xVar, yVar,
+        minEventSpacing, depth, strike, dip, rndID)
     hypocenter_df["OriginTime"] = date_range(
         org, periods=noEvents, freq=f"{dt}S")
     hypocenter_df[["x", "y"]] = hypocenter_df.apply(
@@ -102,11 +105,17 @@ def catalog2hypocenters(config):
             +lat_0={clat}\
             +units=km")
     for event in catalog:
+        lon = event.preferred_origin().longitude
+        lat = event.preferred_origin().latitude
+        dep = event.preferred_origin().depth*1e-3
+        time = event.preferred_origin().time
+        mag = event.preferred_magnitude().mag if event.preferred_magnitude() else nan
         d = {
-            "Longitude": event.preferred_origin().longitude,
-            "Latitude": event.preferred_origin().latitude,
-            "Depth": event.preferred_origin().depth*1e-3,
-            "OriginTime": event.preferred_origin().time
+            "Longitude": lon,
+            "Latitude": lat,
+            "Depth": dep,
+            "OriginTime": time,
+            "Mag": mag
         }
         data.append(d)
     hypocenter_df = DataFrame(data)
@@ -117,7 +126,11 @@ def catalog2hypocenters(config):
     return hypocenter_df
 
 
-def catalog2stations(event, stationNoiseModel):
+def catalog2stations(config, event, eid, stationNoiseModel):
+    rng = RandomState(eid)
+    minPphasePercentage = config["RSS"]["Phases"]["minPphasePercentage"]
+    minSphasePercentage = config["RSS"]["Phases"]["minSphasePercentage"]
+    minAmpPercentage = config["RSS"]["Phases"]["minAmpPercentage"]
     stationPath = os.path.join("inputs", "stations.csv")
     stations = read_csv(stationPath)
     stationNoiseModel = DataFrame(stationNoiseModel).T
@@ -125,15 +138,26 @@ def catalog2stations(event, stationNoiseModel):
     stations = merge(stations, stationNoiseModel, on="code")
     picks = event.picks
     arrivals = event.preferred_origin().arrivals
-    stations = merge(stations, stationNoiseModel, on="code")
-    stations_P = [
-        arrival.pick_id for arrival in arrivals if "P" in arrival.phase.upper()]
-    stations_S = [
-        arrival.pick_id for arrival in arrivals if "S" in arrival.phase.upper()]
-    stations_P = [
-        pick.waveform_id.station_code for pick in picks if pick.resource_id in stations_P]
-    stations_S = [
-        pick.waveform_id.station_code for pick in picks if pick.resource_id in stations_S]
+    picks = {pick.resource_id: pick for pick in event.picks}
+    for arrival in arrivals:
+        arrival.update({"pick": picks[arrival.pick_id]})
+    arrivals = sorted(arrivals, key=lambda x: x.pick.time)
+    arrivals_P = [arv for arv in arrivals if "P" in arv.phase.upper()]
+    arrivals_S = [arv for arv in arrivals if "S" in arv.phase.upper()]
+    stations_P = [arv.pick.waveform_id.station_code for arv in arrivals_P]
+    stations_S = [arv.pick.waveform_id.station_code for arv in arrivals_S]
+    for stations_, minPercentage in zip([stations_P,
+                                         stations_S],
+                                        [minPphasePercentage,
+                                         minSphasePercentage]):
+        loss = 1e2*len(stations_)/len(stations) - minPercentage
+        if loss < 0.0:
+            remainingStations = list(set(stations.code) - set(stations_))
+            nRequiredStations = int(-loss * len(stations) * 1e-2)
+            candidateStations = rng.choice(remainingStations,
+                                           int(nRequiredStations),
+                                           replace=False)
+            stations_.extend(candidateStations)
     mask_P = stations.code.isin(stations_P)
     mask_S = stations.code.isin(stations_S)
     stations_P = stations[mask_P]
@@ -196,9 +220,9 @@ def generateBulletin(config, stationNoiseModel):
             station_P_df, station_S_df = generateCandidateStations(
                 config, stationNoiseModel, eid)
         elif config["RSS"]["flag"]:
-            evt = catalog[eid]
+            event_ = catalog[eid]
             station_P_df, station_S_df = catalog2stations(
-                evt, stationNoiseModel)
+                config, event_, eid, stationNoiseModel)
         travelTime_df = generateTravelTimes(
             config, station_P_df, station_S_df, event, eid)
         bulletin = concat([bulletin, travelTime_df],
@@ -219,6 +243,8 @@ def createCatalog(config, stationNoiseModel):
         catalog = catalogPool.setCatalog(
             config, hypocenter_df, bulletin_df, stationNoiseModel, weighting)
         catalog.write(catalogPath, format="NORDIC", high_accuracy=False)
+    if config["RSS"]["flag"] and config["RSS"]["Phases"]["dataAugmentation"]:
+        AugmentCatalog(config)
 
 
 def generateCatalog(config):
@@ -291,3 +317,38 @@ def catalog2xyzm(hypInp, outName):
     df = df.replace({"None": nan})
     with open(outputFile, "w") as f:
         df.to_string(f, index=False, float_format="%7.3f")
+
+
+def AugmentCatalog(config):
+    print("+++ Augmenting catalogs ...")
+    rawCatalogPath = os.path.join(config["RSS"]["Inputs"]["catalogFile"])
+    rawCatalog = read_events(rawCatalogPath)
+    for w in ["_unw", "_w"]:
+        wCatalogPath = os.path.join("results", f"catalog{w}.out")
+        wCatalog = read_events(wCatalogPath)
+        for event_i, event_j in zip(rawCatalog, wCatalog):
+            for pick_i in event_i.picks:
+                for pick_j in event_j.picks:
+                    c1 = pick_i.waveform_id.station_code == pick_j.waveform_id.station_code
+                    c2 = pick_i.phase_hint[0].upper() == pick_j.phase_hint[0].upper()
+                    if c1 and c2:
+                        pick_j.time = pick_i.time
+                        pick_j.phase_hint = pick_i.phase_hint
+                        try:
+                            pick_j.extra = pick_i.extra
+                        except AttributeError:
+                            pass
+            try:
+                for amplitude_i in event_i.amplitudes:
+                    for amplitude_j in event_j.amplitudes:
+                        if amplitude_i.waveform_id.station_code == amplitude_j.waveform_id.station_code:
+                            amplitude_j.generic_amplitude = amplitude_i.generic_amplitude
+                    else:
+                        event_j.amplitudes.append(amplitude_i)
+                        pick_i = [
+                            pick for pick in event_i.picks if pick.resource_id == amplitude_i.pick_id]
+                        event_j.picks.extend(pick_i)
+
+            except AttributeError:
+                pass
+        wCatalog.write(wCatalogPath, format="NORDIC", high_accuracy=False)

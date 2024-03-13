@@ -64,11 +64,11 @@ def trace(velocity, event, source_id, receivers, phaseType) -> DataFrame:
             "Dist", ascending=False).Dist.index[0]
         longest_tt_dist = travelTime_db.Dist[longest_tt_dist]
         max_coords = velocity.max_coords
-        print("")
+        print("\nOops!")
         print("! > Found some travel times with NaN values! check if velocity model")
-        print("    could cover the entire area of stations and event distributions!")
-        print(
-            f" - The longest station-event distance is: {d2k(longest_tt_dist):.1f} km, but we allowed {max_coords[0:2]} in x and y.")
+        print("    could cover the entire area including stations and event distributions!")
+        print(f" - The longest station-event distance is: {d2k(longest_tt_dist):.1f} km,")
+        print(f"   but the limitations are {max_coords[0:2]} in x and y directions.")
         print(" - Increase velocity model dimensions 'Model>(nx, ny, nz)' parameter ...")
         print("or:")
         print(" - Decrease area including stations 'FSS>Stations>radius' parameter ...")

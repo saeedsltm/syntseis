@@ -3,7 +3,8 @@ from numpy import log10, power
 
 def getMagnitude(amp, dist):
     """
-    Calculate Local magnitude Ml for California [Hutton and Boore, 1987]
+    Hutton, L. K., & Boore, D. M. (1987). The ML scale in southern California.
+    Bulletin of the Seismological Society of America, 77(6), 2074-2094.
     SEISAN V 10.0 P-110
 
     Parameters
@@ -23,7 +24,7 @@ def getMagnitude(amp, dist):
     return Ml
 
 
-def getAmplitude(mag, dist):
+def getAmplitude(magnitude, dist):
     """
     Calculate amplitude for a given local magnitude
     SEISAN V 10.0 P-110
@@ -41,5 +42,6 @@ def getAmplitude(mag, dist):
         maximum ground amplitude (zero−peak) in nm.
 
     """
+    mag = magnitude.mag
     amp = power(10, mag - 1.11*log10(dist) - 0.00189*dist + 2.09)
     return amp

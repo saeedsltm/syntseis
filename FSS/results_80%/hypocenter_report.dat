@@ -1,0 +1,25 @@
+Summary:
+Number of events in initial catalog    : 900
+Number of events in Unweighted catalog : 900
+Number of events in weighted catalog   : 900
+Number of common events between initial and Unweighted catalog : 900
+Number of common events between initial and weighted catalog   : 900
+Mean distance between stations         : 136.3km
+Mean distance between events in initial catalog    :  76.9km
+Mean distance between events in Unweighted catalog :  76.3km
+Mean distance between events in weighted catalog   :  76.3km
+#-----No. events with-----#---------------Unweighted---------------#----------------Weighted---------------#
+          ERH<2.0km       :  140( 15.6%), but real is:  744( 82.7%),  140( 15.6%), but real is:  744( 82.7%)
+          ERH<5.0km       :  732( 81.3%), but real is:  882( 98.0%),  732( 81.3%), but real is:  882( 98.0%)
+          ERZ<2.0km       :  286( 31.8%), but real is:  400( 44.4%),  286( 31.8%), but real is:  400( 44.4%)
+          ERZ<5.0km       :  772( 85.8%), but real is:  803( 89.2%),  772( 85.8%), but real is:  803( 89.2%)
+          RMS<0.2s        :   32(  3.6%),                              32(  3.6%)
+          RMS<0.5s        :  826( 91.8%),                             826( 91.8%)
+          GAP<150°        :  444( 49.3%),                             444( 49.3%)
+          GAP<250°        :  895( 99.4%),                             895( 99.4%)
+          MDS<10km        :   59(  6.6%),                              59(  6.6%)
+          MDS<30km        :  367( 40.8%),                             367( 40.8%)
+#---------Classes---------#---------------Unweighted---------------#----------------Weighted---------------#
+  No. events in class A:       0(  0.0%)                               0(  0.0%)
+  No. events in class B:      45(  5.0%)                              45(  5.0%)
+  No. events in class C:     145( 16.1%)                             145( 16.1%)
